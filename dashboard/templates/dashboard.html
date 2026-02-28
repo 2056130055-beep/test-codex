@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pair Trading Dashboard</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    body{background:#080d18;color:#dbe7ff;font-family:'DM Sans',sans-serif;margin:0}
+    .wrap{padding:14px}.grid{display:grid;grid-template-columns:380px 1fr;gap:12px}
+    .panel{background:#0f1624;border:1px solid #1f2a42;border-radius:10px;padding:10px}
+    .badge{padding:3px 8px;border-radius:12px;font-size:12px}.BUY{background:#00ff8844}.SELL{background:#ff335544}
+    .WATCH_BUY,.WATCH_SELL{background:#ffd70044}.WEAK,.BUY_WEAK,.SELL_WEAK,.NEUTRAL{background:#00d4ff33}
+    .pair{border-bottom:1px solid #1f2a42;padding:8px;cursor:pointer}.pair:hover{background:#152036}
+    button{background:#152036;border:1px solid #2a3b62;color:white;padding:6px 8px;border-radius:8px;margin:2px}
+    .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.card{background:#0d1422;border:1px solid #22314f;border-radius:8px;padding:8px}
+    canvas{max-height:280px}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <h2>HOSE Pair Trading Analysis</h2>
+  <div>Pairs: {{ summary.total }} | BUY: {{ summary.buy }} | SELL: {{ summary.sell }} | WATCH: {{ summary.watch }} | COINT: {{ summary.coint }}</div>
+  <div>
+    <button onclick="setFilter('ALL')">ALL</button><button onclick="setFilter('BUY')">BUY</button>
+    <button onclick="setFilter('SELL')">SELL</button><button onclick="setFilter('WATCH')">WATCH</button>
+    <button onclick="setFilter('COINT')">COINT</button><button onclick="setFilter('STABLE')">STABLE</button>
+  </div>
+  <div class="grid">
+    <div class="panel">
+      <input id="search" placeholder="Search pair" style="width:100%;padding:8px;background:#08101f;color:#fff;border:1px solid #22314f;border-radius:8px" oninput="renderList()" />
+      <div id="pair-list" style="max-height:78vh;overflow:auto"></div>
+    </div>
+    <div class="panel">
+      <div id="title"></div>
+      <div class="cards" id="metrics"></div>
+      <div>
+        <button onclick="setTab('z')">Z-SCORE</button><button onclick="setTab('b')">ROLLING β</button>
+        <button onclick="setTab('h')">HALF-LIFE</button><button onclick="setTab('p')">P&L</button>
+      </div>
+      <canvas id="chart"></canvas>
+      <h4>Risk</h4>
+      <div class="cards" id="risk"></div>
+      <h4>Correlation Heatmap (Top 20)</h4>
+      <canvas id="heatmap"></canvas>
+    </div>
+  </div>
+</div>
+<script>
+const pairs = {{ pairs_json|safe }};
+const heatmap = {{ heatmap_json|safe }};
+let filter='ALL',tab='z',selected=0,chart;
+function pass(p){
+  if(filter==='ALL') return true;
+  if(filter==='BUY') return p.signal==='BUY'||p.signal==='BUY_WEAK';
+  if(filter==='SELL') return p.signal==='SELL'||p.signal==='SELL_WEAK';
+  if(filter==='WATCH') return p.signal.startsWith('WATCH');
+  if(filter==='COINT') return p.pval<=0.10;
+  if(filter==='STABLE') return p.recent_coint_stable&&p.corr_stability>{{ config.corr_stability }};
+}
+function setFilter(f){filter=f;renderList();}
+function setTab(t){tab=t;renderDetail();}
+function renderList(){
+  const s=document.getElementById('search').value.toUpperCase();
+  const list=document.getElementById('pair-list'); list.innerHTML='';
+  pairs.filter(pass).filter(p=>(p.t1+'-'+p.t2).includes(s)).forEach((p,i)=>{
+    const d=document.createElement('div'); d.className='pair'; d.onclick=()=>{selected=pairs.indexOf(p);renderDetail();};
+    d.innerHTML=`<b>${p.t1}/${p.t2}</b> <span class='badge ${p.signal}'>${p.signal}</span><br/>corr=${p.corr.toFixed(2)} p=${p.pval} hl=${p.recent_hl.toFixed(1)} z=${p.zscore.toFixed(2)} score=${p.score}`;
+    list.appendChild(d);
+  });
+}
+function card(k,v){return `<div class='card'><small>${k}</small><div>${v}</div></div>`;}
+function renderDetail(){
+  const p=pairs[selected]; if(!p) return;
+  document.getElementById('title').innerHTML=`<h3>${p.t1}/${p.t2} <span class='badge ${p.signal}'>${p.signal}</span></h3>`;
+  document.getElementById('metrics').innerHTML=[
+    card('Correlation',p.corr.toFixed(3)),card('P-value',p.pval),card('Half-life',p.recent_hl.toFixed(1)),card('Sharpe',p.sharpe.toFixed(2)),
+    card('Win rate',(p.win_rate*100).toFixed(1)+'%'),card('Max DD',(p.max_dd*100).toFixed(1)+'%'),card('Z-score',p.zscore.toFixed(2)),card('Score',p.score)
+  ].join('');
+  document.getElementById('risk').innerHTML=[
+    card('Z max/min',`${p.z_max.toFixed(2)} / ${p.z_min.toFixed(2)}`),card('Streak',p.max_streak_days),card('Adverse',p.max_adverse_z.toFixed(2)),card('Trades',p.n_trades)
+  ].join('');
+  let labels,vals,yellow=[],red=[];
+  if(tab==='z'){labels=p.dates;vals=p.zvals;yellow=[1.5,-1.5];red=[2,-2];}
+  if(tab==='b'){labels=p.rb_dates;vals=p.rb_vals;yellow=[];red=[];}
+  if(tab==='h'){labels=p.rhl_dates;vals=p.rhl_vals;yellow=[45];red=[90];}
+  if(tab==='p'){labels=p.eq_dates;vals=p.equity_curve;yellow=[];red=[];}
+  if(chart) chart.destroy();
+  chart=new Chart(document.getElementById('chart'),{type:'line',data:{labels,datasets:[{label:tab,data:vals,borderColor:'#00d4ff',pointRadius:0}]},options:{plugins:{legend:{display:false}}}});
+}
+function renderHeatmap(){
+  if(!heatmap.values.length) return;
+  const ds=[];for(let i=0;i<heatmap.values.length;i++) for(let j=0;j<heatmap.values[i].length;j++) ds.push({x:j,y:i,v:heatmap.values[i][j]});
+  new Chart(document.getElementById('heatmap'),{type:'scatter',data:{datasets:[{data:ds,pointRadius:5,pointBackgroundColor:c=>{
+    const v=c.raw.v; if(v>0.7) return '#00ff88'; if(v>0.5) return '#00d4ff'; return '#ffd700';
+  }}]},options:{scales:{x:{ticks:{callback:v=>heatmap.tickers[v]||''}},y:{ticks:{callback:v=>heatmap.tickers[v]||''}}}}});
+}
+renderList();renderDetail();renderHeatmap();
+</script>
+</body>
+</html>
