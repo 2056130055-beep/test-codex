@@ -1,0 +1,109 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Pair Trading Dashboard</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <style>
+    body{margin:0;background:#080d18;color:#d8e5ff;font-family:'DM Sans',sans-serif}
+    .header,.cards,.main{padding:12px 16px}.header{display:flex;justify-content:space-between;align-items:center}
+    .badges span{background:#0f1624;padding:6px 10px;margin-right:8px;border-radius:16px}
+    .cards{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}.card{background:#0f1624;padding:8px;border-radius:8px}
+    .main{display:grid;grid-template-columns:380px 1fr;gap:12px}
+    .left,.panel{background:#0f1624;border-radius:8px;padding:10px}
+    .pair-item{padding:8px;border-bottom:1px solid #1a2233;cursor:pointer}
+    .pair-item:hover{background:#172033}
+    .badge{padding:2px 8px;border-radius:999px;font-size:11px}
+    .BUY,.WATCH_BUY{background:#003e2a;color:#00ff88}.SELL,.WATCH_SELL{background:#4c0f1c;color:#ff3355}.WEAK,.NEUTRAL,.BUY_WEAK,.SELL_WEAK{background:#3c3212;color:#ffd700}
+    .filters button{margin:2px;background:#141e2e;color:#d8e5ff;border:1px solid #23314c;border-radius:6px;padding:4px 8px}
+    .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+    canvas{background:#0b1220;border-radius:8px}
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h2>HOSE Pair Trading Analysis Dashboard</h2>
+    <div class="badges">
+      <span>Total {{ stats.total }}</span><span>Cointegrated {{ stats.coint }}</span><span>BUY {{ stats.buy }}</span><span>SELL {{ stats.sell }}</span>
+    </div>
+  </div>
+  <div class="cards">
+    <div class="card">Top Pair: {{ results[0].t1 ~ '/' ~ results[0].t2 if results else 'N/A' }}</div>
+    <div class="card">BUY {{ stats.buy }}</div><div class="card">SELL {{ stats.sell }}</div>
+    <div class="card">WATCH {{ stats.watch }}</div><div class="card">COINT {{ stats.coint }}</div><div class="card">Total {{ stats.total }}</div>
+  </div>
+
+  <div class="main">
+    <div class="left">
+      <div class="filters">
+        <button onclick="setFilter('ALL')">ALL</button><button onclick="setFilter('BUY')">BUY</button><button onclick="setFilter('SELL')">SELL</button><button onclick="setFilter('WATCH')">WATCH</button><button onclick="setFilter('COINT')">COINT</button><button onclick="setFilter('STABLE')">STABLE</button>
+      </div>
+      <input id="search" placeholder="search ticker" oninput="renderList()" style="width:100%;margin:8px 0;padding:6px;background:#0b1220;color:#fff;border:1px solid #243453"/>
+      <div id="pairList" style="max-height:70vh;overflow-y:auto"></div>
+    </div>
+    <div>
+      <div class="panel">
+        <h3 id="pairTitle">Select a pair</h3>
+        <div class="metrics" id="metricCards"></div>
+      </div>
+      <div class="panel" style="margin-top:10px">
+        <button onclick="setTab('z')">Z-SCORE</button><button onclick="setTab('b')">ROLLING β</button><button onclick="setTab('h')">HALF-LIFE</button><button onclick="setTab('p')">P&L</button>
+        <canvas id="mainChart" height="120"></canvas>
+      </div>
+      <div class="panel" style="margin-top:10px"><h4>Correlation Heatmap (top 20)</h4><canvas id="heatmap" height="120"></canvas></div>
+    </div>
+  </div>
+
+<script>
+const DATA = {{ results_json|safe }};
+const HEAT = {{ heatmap_json|safe }};
+let currentFilter='ALL', selected=null, tab='z', chart=null;
+
+function passFilter(r){
+  if(currentFilter==='ALL') return true;
+  if(currentFilter==='BUY') return r.signal.includes('BUY');
+  if(currentFilter==='SELL') return r.signal.includes('SELL');
+  if(currentFilter==='WATCH') return r.signal.includes('WATCH');
+  if(currentFilter==='COINT') return r.pval<=0.10;
+  if(currentFilter==='STABLE') return r.recent_coint_stable && r.corr_stability>0.6;
+  return true;
+}
+function setFilter(f){currentFilter=f;renderList();}
+function renderList(){
+  const q=document.getElementById('search').value.toUpperCase();
+  const list=document.getElementById('pairList'); list.innerHTML='';
+  DATA.filter(r=>passFilter(r) && (`${r.t1} ${r.t2}`).includes(q)).forEach((r,i)=>{
+    const d=document.createElement('div'); d.className='pair-item';
+    d.innerHTML=`<div><b>${r.t1}/${r.t2}</b> <span class='badge ${r.signal}'>${r.signal}</span></div>
+    <div>corr ${r.corr.toFixed(2)} | p ${r.pval} | hl ${r.recent_hl?.toFixed?.(1) ?? '-'} | z ${r.zscore.toFixed(2)} | win ${(r.win_rate*100).toFixed(0)}% | score ${r.score}</div>`;
+    d.onclick=()=>selectPair(r); list.appendChild(d);
+    if(i===0 && !selected) selected=r;
+  });
+  if(selected) selectPair(selected);
+}
+function setTab(t){tab=t; if(selected) drawMain(selected);}
+function metricCard(name,val){return `<div class='card'>${name}<br/><b>${val}</b></div>`}
+function riskBorder(v,w,d){return v>=d?'#ff3355':(v>=w?'#ffd700':'#00ff88')}
+function selectPair(r){selected=r;document.getElementById('pairTitle').textContent=`${r.t1}/${r.t2} — ${r.signal}`;
+  document.getElementById('metricCards').innerHTML = [
+    metricCard('Correlation',r.corr.toFixed(3)), metricCard('P-value',r.pval), metricCard('Half-life',r.recent_hl.toFixed(1)), metricCard('Sharpe',r.sharpe.toFixed(2)),
+    metricCard('Win Rate',(r.win_rate*100).toFixed(1)+'%'), metricCard('Max DD',(r.max_dd*100).toFixed(1)+'%'), metricCard('Z',r.zscore.toFixed(2)), metricCard('Risk',r.risk)
+  ].join('');
+  drawMain(r);
+}
+function drawMain(r){
+ const ctx=document.getElementById('mainChart'); if(chart) chart.destroy();
+ let labels=[], vals=[], title='';
+ if(tab==='z'){labels=r.dates; vals=r.zvals; title='Z-Score';}
+ if(tab==='b'){labels=r.rb_dates; vals=r.rb_vals; title='Rolling Beta';}
+ if(tab==='h'){labels=r.rhl_dates; vals=r.rhl_vals; title='Half-Life';}
+ if(tab==='p'){labels=r.eq_dates || r.dates; vals=r.equity_curve; title='P&L Equity Curve';}
+ chart=new Chart(ctx,{type:'line',data:{labels,datasets:[{label:title,data:vals,borderColor:'#00d4ff'}]},options:{responsive:true,plugins:{legend:{display:true}}}});
+}
+function drawHeat(){
+  new Chart(document.getElementById('heatmap'),{type:'line',data:{labels:HEAT.labels,datasets:HEAT.labels.map((l,i)=>({label:l,data:HEAT.data[i],borderWidth:1}))},options:{plugins:{legend:{display:false}}}})
+}
+renderList(); drawHeat();
+</script>
+</body>
+</html>
